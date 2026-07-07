@@ -84,6 +84,54 @@ global.fetch = async function(path, opts = {}) {
     }
     return response({ enabled: true, spaces: [{ space_id: 'lab', name: 'Lab', widget_count: 1, revision_event_id: 'rev1' }] });
   }
+  if (path === 'api/spaces/tool') {
+    const body = opts.body ? JSON.parse(opts.body) : {};
+    if (body.action === 'space.demo.list') {
+      return response({
+        ok: true,
+        demos: [
+          { demo: 'demo_weather_widget', template: 'weather', title: 'Weather answer → persistent widget', mode: 'metadata-only-smoke', renderer: '<script>bad()</script>', api_key: 'SECRET' },
+          { demo: 'demo_research_harness_pdf_export', template: 'research', title: 'Research harness PDF export', mode: 'metadata-only-smoke', source: 'SECRET_SOURCE' },
+          { demo: 'demo_time_travel_restore', template: 'big-bang', title: 'Time travel rollback', mode: 'metadata-only-smoke', source: 'SECRET_SOURCE' },
+        ],
+      });
+    }
+    if (body.action === 'space.demo.run') {
+      const isResearchPdfDemo = body.demo === 'demo_research_harness_pdf_export';
+      return response({
+        ok: true,
+        action: isResearchPdfDemo ? 'pdf-export-requested' : 'space.demo.run',
+        demo: body.demo || 'demo_weather_widget',
+        template: isResearchPdfDemo ? 'research' : 'weather',
+        mode: 'metadata-only-smoke',
+        space: { space_id: isResearchPdfDemo ? 'demo-research-harness-pdf-export' : 'demo-weather-widget', name: isResearchPdfDemo ? 'Research Harness' : 'Weather Demo Smoke', widget_count: isResearchPdfDemo ? 5 : 1, revision_event_id: 'rev-demo', renderer: '<script>bad()</script>', api_key: 'SECRET' },
+        widgets: isResearchPdfDemo ? [{ id: 'research-summary', kind: 'markdown', title: 'Summary report', renderer: '<script>bad()</script>', api_key: 'SECRET' }] : [{ id: 'weather-current', kind: 'weather', title: 'Weather in Prague', renderer: '<script>bad()</script>', api_key: 'SECRET' }],
+        widget_count: isResearchPdfDemo ? 5 : 1,
+        persisted_widget_count: isResearchPdfDemo ? 5 : 1,
+        persistence_checked: true,
+        revision_event_count: 2,
+        rollback_point: true,
+        queued_event_count: isResearchPdfDemo ? 1 : 0,
+        research_rollback_check: isResearchPdfDemo ? { verified: true, restored_event_id: 'rev-before-export', restored_widget_count: 5, replayed_after_restore: true, renderer: '<script>bad()</script>', api_key: '***' } : undefined,
+      });
+    }
+    if (body.action === 'space.demo.run_all') {
+      return response({
+        ok: true,
+        action: 'space.demo.run_all',
+        total: 2,
+        passed: 2,
+        failed: 0,
+        mode: 'metadata-only-smoke',
+        results: [
+          { ok: true, demo: 'demo_weather_widget', template: 'weather', mode: 'metadata-only-smoke', space: { space_id: 'demo-weather-widget', name: 'Weather Demo Smoke', renderer: '<script>bad()</script>', api_key: 'UNTRUSTED_VALUE' }, widget_count: 1, persisted_widget_count: 1, rollback_point: true, persistence_checked: true },
+          { ok: true, demo: 'demo_time_travel_restore', template: 'big-bang', mode: 'metadata-only-smoke', space: { space_id: 'demo-time-travel-restore', name: 'Time Travel Smoke', source: 'UNTRUSTED_SOURCE' }, widget_count: 4, persisted_widget_count: 4, rollback_point: true, persistence_checked: true },
+        ],
+        renderer: '<script>bad()</script>',
+        api_key: 'UNTRUSTED_VALUE',
+      });
+    }
+  }
   if (path === 'api/spaces/recovery') {
     return response({
       enabled: true,
@@ -97,8 +145,12 @@ global.fetch = async function(path, opts = {}) {
           revision_event_id: 'rev-broken',
           renderer: '<script>bad()</script>',
           widgets: [
-            { id: 'bad-widget', kind: 'html', title: 'Bad <Widget>', disabled: false, renderer: '<script>bad()</script>' },
+            { id: 'bad-widget', kind: 'html', title: 'Bad <Widget>', disabled: false, renderer: '<script>bad()</script>', queued_event_count: 1, latest_queued_event: { event_id: 'evt-repair', event_name: 'agent.repair', status: 'queued', prompt_preview: 'SECRET_VALUE_DO_NOT_LEAK', payload_summary: { api_key: 'SECRET' } } },
             { id: 'disabled-widget', kind: 'markdown', title: 'Disabled Widget', disabled: true, disabled_reason: 'render failed' },
+          ],
+          revisions: [
+            { event_id: 'rev-before-break', event_type: 'widget.recovery_disabled', created_at: 1710000200, details: { widget_id: 'bad-widget', reason: 'Authorization: Bearer SECRET_VALUE_DO_NOT_LEAK', renderer: '<script>bad()</script>', api_key: 'SECRET' } },
+            { event_id: 'rev-space-updated', event_type: 'space.updated', created_at: 1710000100, details: { name: 'Broken <Space>' } },
           ],
         }
       ],
@@ -526,6 +578,18 @@ async function click(action, dataset) {
   } else if (scenario === 'installModelSetup') {
     await window.loadCapySpaces();
     await click('installModelSetupTemplate', {});
+  } else if (scenario === 'runDemoParitySmoke') {
+    await window.loadCapySpaces();
+    beforeHtml = root.innerHTML;
+    await click('runDemoSmoke', { demo: 'demo_weather_widget' });
+  } else if (scenario === 'runResearchDemoParitySmoke') {
+    await window.loadCapySpaces();
+    beforeHtml = root.innerHTML;
+    await click('runDemoSmoke', { demo: 'demo_research_harness_pdf_export' });
+  } else if (scenario === 'runDemoParityAllSmokes') {
+    await window.loadCapySpaces();
+    beforeHtml = root.innerHTML;
+    await click('runAllDemoSmokes', {});
   } else if (scenario === 'openSpaceDetail') {
     await window.loadCapySpaces();
     await click('openSpace', { spaceId: 'lab' });
@@ -1099,6 +1163,68 @@ def test_spaces_ui_install_model_setup_posts_template_and_refreshes_without_widg
     assert "SECRET" not in out["rootHtml"]
 
 
+def test_spaces_ui_runs_demo_parity_smoke_from_safe_catalog(driver_path):
+    out = _run_spaces_scenario(driver_path, "runDemoParitySmoke")
+    list_post = next(call for call in out["calls"] if call["path"] == "api/spaces/tool" and json.loads(call["body"]).get("action") == "space.demo.list")
+    run_post = next(call for call in out["calls"] if call["path"] == "api/spaces/tool" and json.loads(call["body"]).get("action") == "space.demo.run")
+
+    assert list_post["method"] == "POST"
+    assert "Demo parity smoke runner" in out["beforeHtml"]
+    assert "Weather answer → persistent widget" in out["beforeHtml"]
+    assert "Time travel rollback" in out["beforeHtml"]
+    assert run_post["method"] == "POST"
+    assert json.loads(run_post["body"]) == {"action": "space.demo.run", "demo": "demo_weather_widget"}
+    assert "Demo parity smoke passed" in out["rootHtml"]
+    assert "demo_weather_widget" in out["rootHtml"]
+    assert "Weather Demo Smoke" in out["rootHtml"]
+    assert "Widgets: 1" in out["rootHtml"]
+    assert "Persistence: checked" in out["rootHtml"]
+    assert "Rollback point: yes" in out["rootHtml"]
+    assert "<script>" not in out["rootHtml"]
+    assert "renderer" not in out["rootHtml"]
+    assert "api_key" not in out["rootHtml"].lower()
+    assert "SECRET" not in out["rootHtml"]
+
+
+def test_spaces_ui_research_demo_smoke_shows_pdf_export_progress_metadata_only(driver_path):
+    out = _run_spaces_scenario(driver_path, "runResearchDemoParitySmoke")
+    run_post = next(call for call in out["calls"] if call["path"] == "api/spaces/tool" and json.loads(call["body"]).get("action") == "space.demo.run" and json.loads(call["body"]).get("demo") == "demo_research_harness_pdf_export")
+
+    assert json.loads(run_post["body"]) == {"action": "space.demo.run", "demo": "demo_research_harness_pdf_export"}
+    assert "Research harness PDF export" in out["beforeHtml"]
+    assert "Demo parity smoke passed" in out["rootHtml"]
+    assert "demo_research_harness_pdf_export" in out["rootHtml"]
+    assert "Research Harness" in out["rootHtml"]
+    assert "Action: pdf-export-requested" in out["rootHtml"]
+    assert "Queued events: 1" in out["rootHtml"]
+    assert "Rollback verified: yes" in out["rootHtml"]
+    assert "Widgets: 5" in out["rootHtml"]
+    assert "<script>" not in out["rootHtml"]
+    assert "renderer" not in out["rootHtml"]
+    assert "api_key" not in out["rootHtml"].lower()
+    assert "SECRET" not in out["rootHtml"]
+
+
+def test_spaces_ui_runs_all_demo_parity_smokes_metadata_only(driver_path):
+    out = _run_spaces_scenario(driver_path, "runDemoParityAllSmokes")
+    run_all_post = next(call for call in out["calls"] if call["path"] == "api/spaces/tool" and json.loads(call["body"]).get("action") == "space.demo.run_all")
+
+    assert "Run all smokes" in out["beforeHtml"]
+    assert run_all_post["method"] == "POST"
+    assert json.loads(run_all_post["body"]) == {"action": "space.demo.run_all"}
+    assert "Demo parity smoke suite passed" in out["rootHtml"]
+    assert "2 / 2 metadata-only smokes passed" in out["rootHtml"]
+    assert "demo_weather_widget" in out["rootHtml"]
+    assert "demo_time_travel_restore" in out["rootHtml"]
+    assert "persistence: checked" in out["rootHtml"]
+    assert "<script>" not in out["rootHtml"]
+    assert "renderer" not in out["rootHtml"]
+    assert "api_key" not in out["rootHtml"].lower()
+    assert "SECRET" not in out["rootHtml"]
+    assert "UNTRUSTED_VALUE" not in out["rootHtml"]
+    assert "UNTRUSTED_SOURCE" not in out["rootHtml"]
+
+
 def test_spaces_ui_edit_space_posts_to_update_without_changing_space_id(driver_path):
     out = _run_spaces_scenario(driver_path, "editSpace")
     post = next(call for call in out["calls"] if call["path"] == "api/spaces/update")
@@ -1175,6 +1301,15 @@ def test_spaces_ui_recovery_panel_lists_safe_space_metadata_without_widget_code(
     assert "Disabled Widget" in out["recoveryHtml"]
     assert "Disable widget" in out["recoveryHtml"]
     assert "Enable widget" in out["recoveryHtml"]
+    assert "Ask Capy to repair" in out["recoveryHtml"]
+    assert "Queued events: 1" in out["recoveryHtml"]
+    assert "agent.repair · queued" in out["recoveryHtml"]
+    assert "Event: evt-repair" in out["recoveryHtml"]
+    assert "Restore revision" in out["recoveryHtml"]
+    assert "widget.recovery_disabled" in out["recoveryHtml"]
+    assert "space.updated" in out["recoveryHtml"]
+    assert "rev-before-break" in out["recoveryHtml"]
+    assert "reason: [REDACTED]" in out["recoveryHtml"]
     assert "Disabled: render failed" in out["recoveryHtml"]
     assert "Generated widgets rendered: false" in out["recoveryHtml"]
     assert "<script>" not in out["recoveryHtml"]

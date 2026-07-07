@@ -54,6 +54,24 @@ _TRUSTED_SYSTEM_WIDGETS = {
     "memory": {"id": "system-memory", "title": "Memory"},
     "settings": {"id": "system-settings", "title": "Settings"},
 }
+_SPACE_DEMO_RUNS = [
+    {"demo": "demo_weather_widget", "template": "weather", "title": "Weather widget"},
+    {"demo": "demo_daily_dashboard", "template": "dashboard", "title": "Daily dashboard"},
+    {"demo": "demo_notes_app", "template": "notes", "title": "Notes app"},
+    {"demo": "demo_camera_dashboard", "template": "camera", "title": "Camera dashboard"},
+    {"demo": "demo_local_agent_control_dashboard", "template": "service", "title": "Local service dashboard"},
+    {"demo": "demo_browser_cocontrol_google_or_test_site", "template": "browser", "title": "Browser co-control"},
+    {"demo": "demo_research_harness_pdf_export", "template": "research", "title": "Research harness"},
+    {"demo": "demo_kanban_board", "template": "kanban", "title": "Kanban board"},
+    {"demo": "demo_stock_chart", "template": "stock", "title": "Stock chart"},
+    {"demo": "demo_snake_iterative_repair", "template": "game", "title": "Snake repair loop"},
+    {"demo": "demo_step_sequencer_piano_roll", "template": "music", "title": "Step sequencer"},
+    {"demo": "demo_provider_setup", "template": "model-setup", "title": "Provider setup"},
+    {"demo": "demo_big_bang_onboarding", "template": "big-bang", "title": "Big Bang onboarding"},
+    {"demo": "demo_time_travel_restore", "template": "weather", "title": "Time travel restore"},
+    {"demo": "demo_safe_admin_recovery", "template": "weather", "title": "Admin recovery"},
+]
+_SPACE_DEMO_RUN_BY_NAME = {item["demo"]: item for item in _SPACE_DEMO_RUNS}
 
 
 def spaces_enabled() -> bool:
@@ -230,6 +248,12 @@ def _widget_summary(widget: dict[str, Any]) -> dict[str, Any]:
         "title": clean_widget["title"],
         "layout": clean_widget["layout"],
     }
+    metadata = widget.get("metadata") if isinstance(widget.get("metadata"), dict) else {}
+    if metadata:
+        summary["metadata"] = _payload_summary(metadata)
+    metadata_summary = widget.get("metadata_summary") if isinstance(widget.get("metadata_summary"), dict) else metadata.get("metadata_summary") if isinstance(metadata.get("metadata_summary"), dict) else {}
+    if metadata_summary:
+        summary["metadata_summary"] = _payload_summary(metadata_summary)
     system = widget.get("system") if isinstance(widget.get("system"), dict) else {}
     panel = str(system.get("panel") or "").strip()
     if clean_widget["kind"] == "system" and panel in _TRUSTED_SYSTEM_WIDGETS:
@@ -523,6 +547,249 @@ def current_space_for_session(session: Any) -> dict[str, Any]:
     }
 
 
+def list_space_demo_runs() -> list[dict[str, Any]]:
+    """Return the metadata-only scripted video-demo parity smoke catalog."""
+    if not spaces_enabled():
+        return []
+    return [
+        {
+            "demo": item["demo"],
+            "template": item["template"],
+            "title": item["title"],
+            "mode": "metadata-only-smoke",
+        }
+        for item in _SPACE_DEMO_RUNS
+    ]
+
+
+def _research_source_rows(sources: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if not isinstance(sources, list):
+        return rows
+    for item in sources[:20]:
+        if isinstance(item, dict):
+            title = _payload_text_summary(item.get("title") or item.get("name") or "Source", 160)
+            url = _payload_text_summary(item.get("url") or item.get("href") or "", 240)
+            notes = _payload_text_summary(item.get("notes") or item.get("summary") or "", 240)
+        else:
+            title = _payload_text_summary(item, 160)
+            url = ""
+            notes = ""
+        if not title or title == "[REDACTED]":
+            title = "Source"
+        rows.append({"title": title, "url": url, "notes": notes})
+    return rows
+
+
+def _research_note_items(notes: Any) -> list[str]:
+    if isinstance(notes, list):
+        raw_items = notes[:20]
+    elif notes is None:
+        raw_items = []
+    else:
+        raw_items = [notes]
+    return [_payload_text_summary(item, 300) for item in raw_items]
+
+
+def set_research_progress(
+    space_id: str,
+    *,
+    phase: Any,
+    message: Any,
+    sources: Any | None = None,
+    notes: Any | None = None,
+) -> dict[str, Any]:
+    """Update Research Harness live-progress widgets as safe metadata."""
+    if not spaces_enabled():
+        raise RuntimeError("Capy Spaces is disabled")
+    sid = validate_space_id(space_id)
+    safe_phase = _payload_text_summary(phase or "working", 120)
+    safe_message = _payload_text_summary(message or "Research progress updated.", 240)
+    if not safe_phase or safe_phase == "[REDACTED]":
+        safe_phase = "working"
+    if not safe_message:
+        safe_message = "Research progress updated."
+
+    plan_result = patch_widget(
+        sid,
+        "research-plan",
+        {"metadata": {"status": {"phase": safe_phase, "message": safe_message, "progress": "updated"}}},
+    )
+    source_rows = _research_source_rows(sources)
+    sources_result = patch_widget(
+        sid,
+        "research-sources",
+        {"metadata": {"table": {"columns": ["title", "url", "notes"], "rows": source_rows, "source_count": len(source_rows)}}},
+    )
+    note_items = _research_note_items(notes)
+    notes_result = patch_widget(
+        sid,
+        "research-notes",
+        {"metadata": {"notes": {"status": "updated", "items": note_items, "item_count": len(note_items)}}},
+    )
+    return {
+        "space_id": sid,
+        "widgets": {
+            "plan": read_widget_detail(sid, "research-plan"),
+            "sources": read_widget_detail(sid, "research-sources"),
+            "notes": read_widget_detail(sid, "research-notes"),
+        },
+        "revision_event_id": notes_result["revision_event_id"],
+        "updated_revision_event_ids": [
+            plan_result["revision_event_id"],
+            sources_result["revision_event_id"],
+            notes_result["revision_event_id"],
+        ],
+    }
+
+
+def set_research_artifact(space_id: str, title: Any, markdown: Any) -> dict[str, Any]:
+    """Record a Research Harness markdown artifact as safe metadata."""
+    if not spaces_enabled():
+        raise RuntimeError("Capy Spaces is disabled")
+    sid = validate_space_id(space_id)
+    safe_title = _payload_text_summary(title or "Research summary", 180)
+    safe_markdown = _payload_text_summary(markdown or "", 1200)
+    if not safe_title or safe_title == "[REDACTED]":
+        safe_title = "Research summary"
+    if safe_markdown == "[REDACTED]":
+        safe_markdown = ""
+    result = patch_widget(
+        sid,
+        "research-summary",
+        {
+            "title": safe_title,
+            "metadata": {"markdown_status": "ready"},
+            "metadata_summary": {
+                "export_pdf": "ready-for-user-request",
+                "character_count": len(safe_markdown),
+            },
+        },
+    )
+    return {
+        "space_id": sid,
+        "artifact": read_widget_detail(sid, "research-summary"),
+        "revision_event_id": result["revision_event_id"],
+    }
+
+
+def _space_demo_run_summary(demo: str, template: str, space_id: str, *, action: str) -> dict[str, Any]:
+    widgets = list_widgets(space_id)
+    revisions = list_revision_events(space_id)
+    persisted_space = read_space_detail(space_id)
+    persisted_widgets = list_widgets(space_id)
+    persistence_checked = persisted_space.get("space_id") == space_id and len(persisted_widgets) == len(widgets)
+    return {
+        "ok": True,
+        "demo": demo,
+        "template": template,
+        "mode": "metadata-only-smoke",
+        "action": action,
+        "space": persisted_space,
+        "widgets": widgets,
+        "widget_count": len(widgets),
+        "persisted_widget_count": len(persisted_widgets),
+        "persistence_checked": persistence_checked,
+        "revision_event_count": len(revisions),
+        "rollback_point": bool(revisions),
+    }
+
+
+def space_demo_run(name: str) -> dict[str, Any]:
+    """Run one safe metadata-only smoke for a Space Agent video demo fixture.
+
+    This is intentionally not a renderer executor. It launches the matching
+    declarative Capy template, proves there is a persistent widget set and a
+    revision anchor, and uses existing recovery/restore primitives for the two
+    parity demos that specifically exercise those paths.
+    """
+    if not spaces_enabled():
+        raise RuntimeError("Capy Spaces is disabled")
+    demo = str(name or "").strip()
+    spec = _SPACE_DEMO_RUN_BY_NAME.get(demo)
+    if spec is None:
+        raise ValueError("Unsupported demo")
+
+    template = spec["template"]
+    space_id = validate_space_id(_slugify(demo))
+    installed = install_template(template, space_id=space_id)
+    action = "installed"
+    extra: dict[str, Any] = {}
+
+    if demo == "demo_time_travel_restore":
+        before_patch = str(read_space(space_id).get("revision_event_id") or "")
+        widgets = installed.get("installed_widgets") or []
+        if widgets and before_patch:
+            first = widgets[0]
+            patch_widget(space_id, first["id"], {"title": f"{first['title']} smoke patch"})
+            restore_revision(space_id, before_patch)
+            action = "restored"
+    elif demo == "demo_safe_admin_recovery":
+        widgets = installed.get("installed_widgets") or []
+        if widgets:
+            disable_widget_for_recovery(space_id, widgets[0]["id"], reason="demo smoke recovery")
+            action = "recovery-disabled"
+    elif demo == "demo_research_harness_pdf_export":
+        progress = set_research_progress(
+            space_id,
+            phase="summary",
+            message="Summary artifact ready for PDF export.",
+            sources=[{"title": "Demo research brief", "url": "https://example.test/research", "notes": "metadata-only smoke"}],
+            notes=["Research plan, source review, notes, and summary metadata completed."],
+        )
+        artifact = set_research_artifact(
+            space_id,
+            "Research Harness PDF export smoke",
+            "# Research Harness PDF export smoke\n\nMetadata-only demo artifact ready for export.",
+        )
+        rollback_event_id = str(artifact.get("revision_event_id") or "")
+        queued = queue_widget_event(
+            space_id,
+            "research-summary",
+            "widget.export.pdf",
+            {"artifact": "research-summary", "format": "pdf", "demo": demo},
+            prompt="Export the ready research summary artifact as a PDF when approved.",
+        )
+        restored = restore_revision(space_id, rollback_event_id) if rollback_event_id else {"space": {"widgets": []}}
+        queued_events_after_restore = list_widget_events(space_id, "research-summary")
+        action = "pdf-export-requested"
+        extra = {
+            "research_progress": progress,
+            "research_artifact": artifact,
+            "queued_event": queued,
+            "queued_event_count": len(queued_events_after_restore),
+            "research_rollback_check": {
+                "verified": bool(restored.get("ok") is True and queued_events_after_restore),
+                "restored_event_id": rollback_event_id,
+                "restored_widget_count": len((restored.get("space") or {}).get("widgets") or []),
+                "replayed_after_restore": bool(
+                    queued_events_after_restore
+                    and queued_events_after_restore[0].get("event_id") == queued.get("event_id")
+                ),
+            },
+        }
+
+    summary = _space_demo_run_summary(demo, template, space_id, action=action)
+    summary.update(extra)
+    return summary
+
+
+def space_demo_run_all() -> dict[str, Any]:
+    """Run every metadata-only Space Agent video parity smoke fixture."""
+    results = [space_demo_run(item["demo"]) for item in _SPACE_DEMO_RUNS]
+    passed = sum(1 for item in results if item.get("ok") is True)
+    total = len(results)
+    return {
+        "ok": passed == total,
+        "action": "space.demo.run_all",
+        "mode": "metadata-only-smoke",
+        "total": total,
+        "passed": passed,
+        "failed": total - passed,
+        "results": results,
+    }
+
+
 def _space_tool_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the bounded metadata-only payload accepted by the tool adapter."""
     allowed = {"space_id", "name", "description", "agent_instructions", "instructions", "template"}
@@ -555,6 +822,13 @@ def run_space_tool(action: str, payload: dict[str, Any] | None = None) -> dict[s
 
     if name in {"space.list", "space.spaces", "space.spaces.list"}:
         return {"ok": True, "action": name, "spaces": list_spaces()}
+    if name in {"space.demo.list", "space.demo.runs"}:
+        return {"ok": True, "action": name, "demos": list_space_demo_runs()}
+    if name in {"space.demo.run", "space_demo_run"}:
+        demo_name = data.get("demo") or data.get("name") or data.get("demo_name") or ""
+        return {"action": name, **space_demo_run(demo_name)}
+    if name in {"space.demo.run_all", "space.demo.run-all", "space_demo_run_all"}:
+        return space_demo_run_all()
     if name in {"space.current", "space.current.get"}:
         current_id = _space_tool_current_id(data)
         if not current_id:
@@ -1083,6 +1357,7 @@ def patch_widget(space_id: str, widget_id: str, patch: dict[str, Any]) -> dict[s
         "layout",
         "description",
         "metadata",
+        "metadata_summary",
         "permissions",
         "recovery",
         "event_bridge",
@@ -1099,11 +1374,11 @@ def patch_widget(space_id: str, widget_id: str, patch: dict[str, Any]) -> dict[s
     changed_fields: list[str] = []
     for key, value in (patch or {}).items():
         safe_key = str(key or "")
-        if safe_key not in allowed or not _payload_key_is_safe(safe_key):
+        if safe_key not in allowed or (safe_key not in {"metadata", "metadata_summary"} and not _payload_key_is_safe(safe_key)):
             continue
         if safe_key == "layout":
             widget["layout"] = _normalize_widget_layout(value)
-        elif safe_key in {"metadata", "permissions", "recovery", "event_bridge", "prompt", "status", "weather", "chart", "table", "notes", "browser", "kanban", "markdown"}:
+        elif safe_key in {"metadata", "metadata_summary", "permissions", "recovery", "event_bridge", "prompt", "status", "weather", "chart", "table", "notes", "browser", "kanban", "markdown"}:
             if isinstance(value, dict):
                 widget[safe_key] = _payload_summary(value)
             else:
@@ -2205,7 +2480,27 @@ def recovery_snapshot() -> dict[str, Any]:
             space = json.loads(manifest.read_text(encoding="utf-8"))
             summary = _summary(space)
             widgets = space.get("widgets") if isinstance(space.get("widgets"), list) else []
-            summary["widgets"] = [_widget_recovery_summary(widget) for widget in widgets if isinstance(widget, dict)]
+            widget_summaries = [_widget_recovery_summary(widget) for widget in widgets if isinstance(widget, dict)]
+            queued_events_by_widget: dict[str, list[dict[str, Any]]] = {}
+            for event in list_widget_events(summary["space_id"], limit=100):
+                wid = _context_value(event.get("widget_id"), 120)
+                if not wid:
+                    continue
+                queued_events_by_widget.setdefault(wid, []).append(event)
+            for widget_summary in widget_summaries:
+                wid = _context_value(widget_summary.get("id"), 120)
+                widget_events = queued_events_by_widget.get(wid) or []
+                if not widget_events:
+                    continue
+                latest = widget_events[0]
+                widget_summary["queued_event_count"] = len(widget_events)
+                widget_summary["latest_queued_event"] = {
+                    "event_id": _context_value(latest.get("event_id"), 120),
+                    "event_name": _context_value(latest.get("event_name"), 120),
+                    "status": _context_value(latest.get("status") or "queued", 80),
+                }
+            summary["widgets"] = widget_summaries
+            summary["revisions"] = list_revision_events(summary["space_id"], 5)
             spaces.append(summary)
         except Exception:
             continue

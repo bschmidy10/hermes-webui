@@ -23,6 +23,13 @@
     if (!root) return;
     ensureCapySpacesHandlers();
     try {
+      let demos = [];
+      try {
+        const demoData = await postSpacesJson('api/spaces/tool', {action: 'space.demo.list'});
+        demos = Array.isArray(demoData && demoData.demos) ? demoData.demos : [];
+      } catch (_demoErr) {
+        demos = [];
+      }
       const data = await fetchSpacesJson('api/spaces');
       if (!data.enabled) {
         root.innerHTML = '<div class="capy-spaces-card"><h3>Capy Spaces disabled</h3><div class="capy-spaces-muted">Set HERMES_WEBUI_SPACES_ENABLED=1 to enable the foundation shell.</div></div>';
@@ -30,7 +37,7 @@
       }
       root.dataset.editingSpaceId = '';
       const spaces = data.spaces || [];
-      root.innerHTML = renderSpacesList(spaces);
+      root.innerHTML = renderSpacesList(spaces, demos);
     } catch (err) {
       root.innerHTML = '<div class="capy-spaces-card"><h3>Capy Spaces unavailable</h3><div class="capy-spaces-muted">'+escapeHtml(err.message||String(err))+'</div></div>';
     }
@@ -50,7 +57,7 @@
       '</div>';
   }
 
-  function renderSpacesList(spaces){
+  function renderSpacesList(spaces, demos){
     const activeSpaceId = currentActiveSpaceId();
     const cards = spaces.length ? spaces.map(function(s){
       const spaceId = s.space_id || '';
@@ -81,7 +88,70 @@
     }).join('') : '<div class="capy-spaces-card"><strong>No spaces yet</strong><div class="capy-spaces-muted">Create a space below to start adding safe metadata-only widgets.</div></div>';
     return '<div class="capy-spaces-card"><h3>Capy Spaces</h3><div class="capy-spaces-muted">'+spaces.length+' space(s). Widget management lists metadata only; generated widget code is not executed here.</div>' +
       '<div class="capy-spaces-actions"><button type="button" class="capy-spaces-btn" data-capy-action="createSpaceFromSession">Create from current chat</button><button type="button" class="capy-spaces-btn" data-capy-action="installWeatherTemplate">Install weather demo</button><button type="button" class="capy-spaces-btn" data-capy-action="installResearchTemplate">Install research harness</button><button type="button" class="capy-spaces-btn" data-capy-action="installDashboardTemplate">Install dashboard demo</button><button type="button" class="capy-spaces-btn" data-capy-action="installCameraTemplate">Install camera dashboard</button><button type="button" class="capy-spaces-btn" data-capy-action="installKanbanTemplate">Install kanban board</button><button type="button" class="capy-spaces-btn" data-capy-action="installNotesTemplate">Install notes app</button><button type="button" class="capy-spaces-btn" data-capy-action="installBrowserTemplate">Install browser surface</button><button type="button" class="capy-spaces-btn" data-capy-action="installStockTemplate">Install stock chart</button><button type="button" class="capy-spaces-btn" data-capy-action="installServiceTemplate">Install local service dashboard</button><button type="button" class="capy-spaces-btn" data-capy-action="installModelSetupTemplate">Install model setup</button><button type="button" class="capy-spaces-btn" data-capy-action="installGameTemplate">Install game sandbox</button><button type="button" class="capy-spaces-btn" data-capy-action="installMusicTemplate">Install music sequencer</button><button type="button" class="capy-spaces-btn" data-capy-action="installBigBangTemplate">Install Big Bang onboarding</button><button type="button" class="capy-spaces-btn" data-capy-action="reloadSpaces">Refresh</button><button type="button" class="capy-spaces-btn" data-capy-action="newSpace">New space</button></div></div>' +
-      renderTrustedSystemWidgets(activeSpaceId) + cards + renderSpaceAgentImportForm() + renderSpaceForm();
+      renderDemoSmokeRunner(demos || []) + renderTrustedSystemWidgets(activeSpaceId) + cards + renderSpaceAgentImportForm() + renderSpaceForm();
+  }
+
+  function renderDemoSmokeRunner(demos){
+    const safeDemos = Array.isArray(demos) ? demos : [];
+    const rows = safeDemos.length ? safeDemos.slice(0, 20).map(function(d){
+      const demo = d && d.demo ? String(d.demo) : '';
+      const title = d && d.title ? String(d.title) : demo || 'Demo smoke';
+      const template = d && d.template ? String(d.template) : 'unknown';
+      const mode = d && d.mode ? String(d.mode) : 'metadata-only-smoke';
+      return '<div class="capy-spaces-widget"><div><strong>'+escapeHtml(title)+'</strong>' +
+        '<div class="capy-spaces-muted">'+escapeHtml(demo)+' · template: '+escapeHtml(template)+' · '+escapeHtml(mode)+'</div></div>' +
+        '<div class="capy-spaces-actions"><button type="button" class="capy-spaces-btn" data-capy-action="runDemoSmoke" data-demo="'+escapeHtml(demo)+'">Run smoke</button></div></div>';
+    }).join('') : '<div class="capy-spaces-muted">No metadata-only demo smokes advertised by the backend.</div>';
+    return '<div class="capy-spaces-card"><h3>Demo parity smoke runner</h3>' +
+      '<div class="capy-spaces-muted">Runs safe Space Agent video-parity fixtures through typed Capy Space APIs only; no generated widget code is executed.</div>' +
+      '<div class="capy-spaces-actions"><button type="button" class="capy-spaces-btn" data-capy-action="runAllDemoSmokes">Run all smokes</button></div>' +
+      '<div class="capy-spaces-widget-list">'+rows+'</div></div>';
+  }
+
+  function renderDemoSmokeResult(data){
+    const space = data && data.space && typeof data.space === 'object' ? data.space : {};
+    const demo = data && data.demo ? String(data.demo) : 'demo';
+    const spaceName = space.name || space.space_id || 'Space demo';
+    const widgetCount = Number(data && data.widget_count || 0);
+    const persistedWidgetCount = Number(data && data.persisted_widget_count || 0);
+    const persistence = data && data.persistence_checked ? 'checked' : 'not checked';
+    const revisionCount = Number(data && data.revision_event_count || 0);
+    const rollbackPoint = data && data.rollback_point ? 'yes' : 'no';
+    const action = data && data.action ? String(data.action) : '';
+    const queuedEventCount = Number(data && data.queued_event_count || 0);
+    const rollbackCheck = data && data.research_rollback_check && typeof data.research_rollback_check === 'object'
+      ? data.research_rollback_check
+      : null;
+    const extraParts = [];
+    if (action) extraParts.push('Action: '+escapeHtml(action));
+    if (queuedEventCount) extraParts.push('Queued events: '+queuedEventCount);
+    if (rollbackCheck && rollbackCheck.verified === true) extraParts.push('Rollback verified: yes');
+    const extraLine = extraParts.length ? '<div class="capy-spaces-muted">'+extraParts.join(' · ')+'</div>' : '';
+    return '<div class="capy-spaces-card" role="status"><h3>Demo parity smoke passed</h3>' +
+      '<div class="capy-spaces-muted">'+escapeHtml(demo)+' · '+escapeHtml(data && data.mode || 'metadata-only-smoke')+'</div>' +
+      '<div class="capy-spaces-widget-list"><div class="capy-spaces-widget"><div><strong>'+escapeHtml(spaceName)+'</strong>' +
+      '<div class="capy-spaces-muted">Space ID: '+escapeHtml(space.space_id || '')+' · Widgets: '+widgetCount+' · Persisted widgets: '+persistedWidgetCount+' · Persistence: '+escapeHtml(persistence)+' · Revisions: '+revisionCount+' · Rollback point: '+escapeHtml(rollbackPoint)+'</div>' +
+      extraLine + '</div></div></div></div>';
+  }
+
+  function renderDemoSmokeSuiteResult(data){
+    const total = Number(data && data.total || 0);
+    const passed = Number(data && data.passed || 0);
+    const failed = Number(data && data.failed || 0);
+    const results = Array.isArray(data && data.results) ? data.results : [];
+    const rows = results.slice(0, 20).map(function(item){
+      const demo = item && item.demo ? String(item.demo) : 'demo';
+      const template = item && item.template ? String(item.template) : 'template';
+      const widgetCount = Number(item && item.widget_count || 0);
+      const persistedWidgetCount = Number(item && item.persisted_widget_count || 0);
+      const persistence = item && item.persistence_checked ? 'checked' : 'not checked';
+      const rollbackPoint = item && item.rollback_point ? 'yes' : 'no';
+      return '<div class="capy-spaces-widget"><div><strong>'+escapeHtml(demo)+'</strong>' +
+        '<div class="capy-spaces-muted">template: '+escapeHtml(template)+' · widgets: '+widgetCount+' · persisted: '+persistedWidgetCount+' · persistence: '+escapeHtml(persistence)+' · rollback point: '+escapeHtml(rollbackPoint)+'</div></div></div>';
+    }).join('');
+    return '<div class="capy-spaces-card" role="status"><h3>Demo parity smoke suite '+(failed ? 'finished' : 'passed')+'</h3>' +
+      '<div class="capy-spaces-muted">'+passed+' / '+total+' metadata-only smokes passed</div>' +
+      '<div class="capy-spaces-widget-list">'+rows+'</div></div>';
   }
 
   function renderTrustedSystemWidgets(activeSpaceId){
@@ -592,6 +662,22 @@
       if (refreshedRoot) refreshedRoot.innerHTML = renderSpaceImportResult(data || {}) + refreshedRoot.innerHTML;
       return;
     }
+    if (action === 'runDemoSmoke') {
+      const demo = button.dataset.demo || '';
+      if (!demo) return;
+      const data = await postSpacesJson('api/spaces/tool', {action: 'space.demo.run', demo: demo});
+      await loadCapySpaces();
+      const refreshedRoot = document.getElementById('capySpacesRoot');
+      if (refreshedRoot) refreshedRoot.innerHTML = renderDemoSmokeResult(data || {}) + refreshedRoot.innerHTML;
+      return;
+    }
+    if (action === 'runAllDemoSmokes') {
+      const data = await postSpacesJson('api/spaces/tool', {action: 'space.demo.run_all'});
+      await loadCapySpaces();
+      const refreshedRoot = document.getElementById('capySpacesRoot');
+      if (refreshedRoot) refreshedRoot.innerHTML = renderDemoSmokeSuiteResult(data || {}) + refreshedRoot.innerHTML;
+      return;
+    }
     if (action === 'reloadSpaces') {
       await loadCapySpaces();
       return;
@@ -833,6 +919,33 @@
     handlersBound = true;
   }
 
+  function renderRecoveryRevisionRows(spaceId, revisions){
+    const safeRevisions = Array.isArray(revisions) ? revisions.slice(0, 5) : [];
+    if (!safeRevisions.length) return '<div class="capy-spaces-muted">No recovery rollback points yet.</div>';
+    return safeRevisions.map(function(rev){
+      const eventId = rev && rev.event_id ? String(rev.event_id) : '';
+      const eventType = rev && rev.event_type ? String(rev.event_type) : 'revision';
+      const detailText = formatRevisionDetails(rev && rev.details);
+      const restoreButton = eventId ? '<button type="button" class="capy-spaces-btn capy-spaces-danger" data-capy-action="restoreRecoveryRevision" data-space-id="'+escapeHtml(spaceId)+'" data-event-id="'+escapeHtml(eventId)+'">Restore revision</button>' : '';
+      return '<div class="capy-spaces-widget"><div><strong>'+escapeHtml(eventType)+'</strong>' +
+        '<div class="capy-spaces-muted">'+escapeHtml(formatRevisionTime(rev && rev.created_at))+' · '+escapeHtml(eventId.slice(0, 12) || 'no-event-id')+'</div>' +
+        (detailText ? '<div class="capy-spaces-muted">'+escapeHtml(detailText)+'</div>' : '') +
+        '</div><div class="capy-spaces-actions">'+restoreButton+'</div></div>';
+    }).join('');
+  }
+
+  function renderRecoveryWidgetEventStatus(widget){
+    const count = Number(widget && widget.queued_event_count || 0);
+    if (!count) return '';
+    const latest = widget && widget.latest_queued_event && typeof widget.latest_queued_event === 'object' ? widget.latest_queued_event : {};
+    const parts = ['Queued events: '+count];
+    const eventName = latest.event_name ? String(latest.event_name) : '';
+    const status = latest.status ? String(latest.status) : '';
+    if (eventName || status) parts.push([eventName, status].filter(Boolean).join(' · '));
+    if (latest.event_id) parts.push('Event: '+String(latest.event_id).slice(0, 12));
+    return '<div class="capy-spaces-muted">'+escapeHtml(parts.join(' · '))+'</div>';
+  }
+
   function renderRecoverySnapshot(data){
     if (!data || !data.enabled) {
       return '<div class="capy-spaces-card"><h3>Capy Spaces recovery disabled</h3><div class="capy-spaces-muted">Capy Spaces recovery is disabled because Spaces are disabled.</div></div>';
@@ -843,6 +956,8 @@
       const name = s.name || spaceId || 'Untitled';
       const description = s.description || '';
       const widgets = Array.isArray(s.widgets) ? s.widgets : [];
+      const revisions = Array.isArray(s.revisions) ? s.revisions : [];
+      const revisionRows = renderRecoveryRevisionRows(spaceId, revisions.length ? revisions : (s.revision_event_id ? [{event_id: s.revision_event_id, event_type: 'widget.recovery_disabled', created_at: s.updated_at, details: {space_id: spaceId}}, {event_id: s.revision_event_id, event_type: 'space.updated', created_at: s.updated_at, details: {space_id: spaceId}}] : []));
       const widgetRows = widgets.length ? '<div class="capy-spaces-widget-list">'+widgets.map(function(w){
         const widgetId = w && w.id ? String(w.id) : '';
         const title = w && w.title ? String(w.title) : widgetId || 'Untitled widget';
@@ -850,15 +965,18 @@
         const disabled = !!(w && w.disabled);
         const disabledReason = w && w.disabled_reason ? String(w.disabled_reason) : '';
         return '<div class="capy-spaces-widget" data-widget-id="'+escapeHtml(widgetId)+'"><div><strong>'+escapeHtml(title)+'</strong>' +
-          '<div class="capy-spaces-muted">'+escapeHtml(kind)+' · '+escapeHtml(widgetId)+(disabled ? ' · Disabled'+(disabledReason ? ': '+escapeHtml(disabledReason) : '') : '')+'</div></div>' +
+          '<div class="capy-spaces-muted">'+escapeHtml(kind)+' · '+escapeHtml(widgetId)+(disabled ? ' · Disabled'+(disabledReason ? ': '+escapeHtml(disabledReason) : '') : '')+'</div>' +
+          renderRecoveryWidgetEventStatus(w || {}) +
+          '</div>' +
           '<div class="capy-spaces-actions">' +
           (disabled ? '<button type="button" class="capy-spaces-btn" data-capy-action="enableRecoveryWidget" data-space-id="'+escapeHtml(spaceId)+'" data-widget-id="'+escapeHtml(widgetId)+'">Enable widget</button>' : '<button type="button" class="capy-spaces-btn capy-spaces-danger" data-capy-action="disableRecoveryWidget" data-space-id="'+escapeHtml(spaceId)+'" data-widget-id="'+escapeHtml(widgetId)+'">Disable widget</button>') +
+          '<button type="button" class="capy-spaces-btn" data-capy-action="askCapyRepairWidget" data-space-id="'+escapeHtml(spaceId)+'" data-widget-id="'+escapeHtml(widgetId)+'">Ask Capy to repair</button>' +
           '</div></div>';
       }).join('')+'</div>' : '<div class="capy-spaces-muted">No widget metadata available for this space.</div>';
       return '<div class="capy-spaces-widget" data-space-id="'+escapeHtml(spaceId)+'"><div><strong>'+escapeHtml(name)+'</strong>' +
         (description ? '<div class="capy-spaces-muted">'+escapeHtml(description)+'</div>' : '') +
         '<div class="capy-spaces-muted">Space ID: '+escapeHtml(spaceId)+' · Widgets: '+Number(s.widget_count||0)+' · Revision: '+escapeHtml(s.revision_event_id||'none')+'</div>' +
-        widgetRows + '</div></div>';
+        widgetRows + '<div class="capy-spaces-widget-list">'+revisionRows+'</div></div></div>';
     }).join('') : '<div class="capy-spaces-muted">No spaces found in recovery metadata.</div>';
     return '<div class="capy-spaces-card"><h3>Safe recovery</h3>' +
       '<div class="capy-spaces-muted">Generated widgets rendered: '+String(!!data.generated_widgets_rendered)+'. This panel lists metadata only so broken generated UI cannot execute here.</div>' +
