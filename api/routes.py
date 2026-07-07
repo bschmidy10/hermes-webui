@@ -12323,6 +12323,23 @@ def handle_get(handler, parsed) -> bool:
             return j(handler, {"enabled": False, "spaces": []})
         return j(handler, {"enabled": True, "spaces": capy_spaces.list_spaces()})
 
+    if parsed.path == "/api/spaces/current":
+        from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
+        session_id = parse_qs(parsed.query).get("session_id", [""])[0]
+        if not session_id:
+            return bad(handler, "Missing session_id")
+        try:
+            session = get_session(session_id)
+            return j(handler, capy_spaces.current_space_for_session(session))
+        except KeyError:
+            return bad(handler, "Session not found", 404)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
     if parsed.path == "/api/spaces/recovery":
         from api import spaces as capy_spaces
         return j(handler, capy_spaces.recovery_snapshot())
@@ -12335,7 +12352,7 @@ def handle_get(handler, parsed) -> bool:
         if not space_id:
             return bad(handler, "Missing space_id")
         try:
-            return j(handler, {"space": capy_spaces.read_space(space_id)})
+            return j(handler, {"space": capy_spaces.read_space_detail(space_id)})
         except ValueError as e:
             return bad(handler, str(e))
         except FileNotFoundError:
@@ -12357,6 +12374,20 @@ def handle_get(handler, parsed) -> bool:
             logger.exception("spaces memory failed")
             return bad(handler, _sanitize_error(exc), 500)
 
+    if parsed.path == "/api/spaces/revisions":
+        from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
+        space_id = parse_qs(parsed.query).get("space_id", [""])[0]
+        if not space_id:
+            return bad(handler, "Missing space_id")
+        try:
+            return j(handler, {"revisions": capy_spaces.list_revision_events(space_id)})
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
     if parsed.path == "/api/spaces/widgets":
         from api import spaces as capy_spaces
         if not capy_spaces.spaces_enabled():
@@ -12371,6 +12402,22 @@ def handle_get(handler, parsed) -> bool:
         except FileNotFoundError:
             return bad(handler, "Space not found", 404)
 
+    if parsed.path == "/api/spaces/widget/events":
+        from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
+        qs = parse_qs(parsed.query)
+        space_id = qs.get("space_id", [""])[0]
+        widget_id = qs.get("widget_id", [""])[0]
+        if not space_id:
+            return bad(handler, "Missing space_id")
+        try:
+            return j(handler, {"events": capy_spaces.list_widget_events(space_id, widget_id=widget_id or None)})
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space or widget not found", 404)
+
     if parsed.path == "/api/spaces/widget":
         from api import spaces as capy_spaces
         if not capy_spaces.spaces_enabled():
@@ -12381,7 +12428,7 @@ def handle_get(handler, parsed) -> bool:
         if not space_id or not widget_id:
             return bad(handler, "Missing space_id or widget_id")
         try:
-            return j(handler, {"widget": capy_spaces.read_widget(space_id, widget_id)})
+            return j(handler, {"widget": capy_spaces.read_widget_detail(space_id, widget_id)})
         except ValueError as e:
             return bad(handler, str(e))
         except FileNotFoundError:
@@ -14421,10 +14468,53 @@ def handle_post(handler, parsed) -> bool:
         return _handle_workspace_reorder(handler, body)
 
     # ── Capy Spaces foundation (POST) ──
+    if parsed.path == "/api/spaces/tool":
+        from api import spaces as capy_spaces
+        action = body.get("action")
+        if not action:
+            return bad(handler, "Missing action")
+        try:
+            return j(handler, capy_spaces.run_space_tool(action, body))
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space or widget not found", 404)
+
     if parsed.path == "/api/spaces/create":
         from api import spaces as capy_spaces
         try:
             return j(handler, {"space": capy_spaces.create_space(body)})
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except (ValueError, FileExistsError) as e:
+            return bad(handler, str(e))
+
+    if parsed.path == "/api/spaces/create-from-session":
+        from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
+        session_id = body.get("session_id")
+        if not session_id:
+            return bad(handler, "Missing session_id")
+        try:
+            s = get_session(session_id)
+            created = capy_spaces.create_space_from_session_metadata(s)
+            space_id = capy_spaces.validate_space_id(created["space_id"])
+            with _get_session_agent_lock(session_id):
+                s.active_space_id = space_id
+                s.save()
+            return j(
+                handler,
+                {
+                    "ok": True,
+                    "space": capy_spaces.read_space_detail(space_id),
+                    "session": s.compact(),
+                },
+            )
+        except KeyError:
+            return bad(handler, "Session not found", 404)
         except RuntimeError as e:
             return bad(handler, str(e), 403)
         except (ValueError, FileExistsError) as e:
@@ -14458,6 +14548,84 @@ def handle_post(handler, parsed) -> bool:
         except FileNotFoundError:
             return bad(handler, "Space not found", 404)
 
+    if parsed.path == "/api/spaces/templates/install":
+        from api import spaces as capy_spaces
+        try:
+            return j(
+                handler,
+                capy_spaces.install_template(
+                    body.get("template") or "weather",
+                    space_id=body.get("space_id") or None,
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
+    if parsed.path == "/api/spaces/templates/reset":
+        from api import spaces as capy_spaces
+        try:
+            return j(
+                handler,
+                capy_spaces.reset_template(
+                    body.get("template") or "big-bang",
+                    space_id=body.get("space_id") or None,
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
+    if parsed.path == "/api/spaces/import":
+        from api import spaces as capy_spaces
+        try:
+            return j(
+                handler,
+                capy_spaces.import_space_agent_package(
+                    body,
+                    space_id=body.get("space_id") or None,
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except (ValueError, FileExistsError) as e:
+            return bad(handler, str(e))
+
+    if parsed.path == "/api/spaces/export":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        if not space_id:
+            return bad(handler, "Missing space_id")
+        try:
+            return j(handler, capy_spaces.export_space_agent_package(space_id, format=body.get("format") or "yaml"))
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
+    if parsed.path == "/api/spaces/revision/restore":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        event_id = body.get("event_id")
+        if not space_id or not event_id:
+            return bad(handler, "Missing space_id or event_id")
+        try:
+            return j(handler, capy_spaces.restore_revision(space_id, event_id))
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Revision not found", 404)
+
     if parsed.path == "/api/spaces/widget/upsert":
         from api import spaces as capy_spaces
         space_id = body.get("space_id")
@@ -14465,13 +14633,46 @@ def handle_post(handler, parsed) -> bool:
         if not space_id:
             return bad(handler, "Missing space_id")
         try:
-            return j(handler, capy_spaces.upsert_widget(space_id, widget))
+            result = capy_spaces.upsert_widget(space_id, widget)
+            result["widget"] = capy_spaces.read_widget_detail(space_id, result["widget"]["id"])
+            return j(handler, result)
         except RuntimeError as e:
             return bad(handler, str(e), 403)
         except ValueError as e:
             return bad(handler, str(e))
         except FileNotFoundError:
             return bad(handler, "Space not found", 404)
+
+    if parsed.path == "/api/spaces/system-widget/upsert":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        panel = body.get("panel")
+        if not space_id or not panel:
+            return bad(handler, "Missing space_id or panel")
+        try:
+            return j(handler, capy_spaces.upsert_system_widget(space_id, panel, body.get("layout") or {}))
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Space not found", 404)
+
+    if parsed.path == "/api/spaces/widget/patch":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        widget_id = body.get("widget_id")
+        patch = body.get("patch") or body.get("fields") or {}
+        if not space_id or not widget_id:
+            return bad(handler, "Missing space_id or widget_id")
+        try:
+            return j(handler, capy_spaces.patch_widget(space_id, widget_id, patch))
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Widget not found", 404)
 
     if parsed.path == "/api/spaces/widget/delete":
         from api import spaces as capy_spaces
@@ -14488,8 +14689,79 @@ def handle_post(handler, parsed) -> bool:
         except FileNotFoundError:
             return bad(handler, "Widget not found", 404)
 
+    if parsed.path == "/api/spaces/widget/event":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        widget_id = body.get("widget_id")
+        if not space_id or not widget_id:
+            return bad(handler, "Missing space_id or widget_id")
+        try:
+            return j(
+                handler,
+                capy_spaces.queue_widget_event(
+                    space_id,
+                    widget_id,
+                    body.get("event_name") or "agent.prompt",
+                    body.get("payload") or {},
+                    prompt=body.get("prompt") or "",
+                    session_id=body.get("session_id") or "",
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Widget not found", 404)
+
+    if parsed.path == "/api/spaces/recovery/disable-widget":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        widget_id = body.get("widget_id")
+        if not space_id or not widget_id:
+            return bad(handler, "Missing space_id or widget_id")
+        try:
+            return j(
+                handler,
+                capy_spaces.disable_widget_for_recovery(
+                    space_id,
+                    widget_id,
+                    reason=body.get("reason") or "disabled from recovery",
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Widget not found", 404)
+
+    if parsed.path == "/api/spaces/recovery/enable-widget":
+        from api import spaces as capy_spaces
+        space_id = body.get("space_id")
+        widget_id = body.get("widget_id")
+        if not space_id or not widget_id:
+            return bad(handler, "Missing space_id or widget_id")
+        try:
+            return j(
+                handler,
+                capy_spaces.enable_widget_for_recovery(
+                    space_id,
+                    widget_id,
+                    reason=body.get("reason") or "enabled from recovery",
+                ),
+            )
+        except RuntimeError as e:
+            return bad(handler, str(e), 403)
+        except ValueError as e:
+            return bad(handler, str(e))
+        except FileNotFoundError:
+            return bad(handler, "Widget not found", 404)
+
     if parsed.path == "/api/spaces/activate":
         from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
         space_id = body.get("space_id")
         session_id = body.get("session_id")
         if not space_id or not session_id:
@@ -14504,6 +14776,22 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e))
         except (FileNotFoundError, KeyError):
             return bad(handler, "Space or session not found", 404)
+
+    if parsed.path == "/api/spaces/deactivate":
+        from api import spaces as capy_spaces
+        if not capy_spaces.spaces_enabled():
+            return bad(handler, "Capy Spaces is disabled", 403)
+        session_id = body.get("session_id")
+        if not session_id:
+            return bad(handler, "Missing session_id")
+        try:
+            s = get_session(session_id)
+        except KeyError:
+            return bad(handler, "Session not found", 404)
+        with _get_session_agent_lock(session_id):
+            s.active_space_id = None
+            s.save()
+        return j(handler, {"ok": True, "session": s.compact() | {"messages": s.messages}})
 
     # ── Approval (POST) ──
     if parsed.path == "/api/approval/respond":
