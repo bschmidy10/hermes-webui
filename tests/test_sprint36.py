@@ -5,15 +5,15 @@ The old cancelStream() set "Cancelling..." status and then relied on the SSE can
 event to clear it. If the SSE connection was already closed, the event never arrived
 and "Cancelling..." lingered indefinitely.
 
-The fix: cancelStream() now clears status, busy state, activeStreamId, and the cancel
-button directly after the cancel API request completes — regardless of whether the SSE
-cancel event fires. The SSE handler still runs if it arrives (all operations idempotent).
+The fix: cancelStream() now clears status, busy state, and activeStreamId directly after
+the cancel API request completes — regardless of whether the SSE cancel event fires.
+The SSE handler still runs if it arrives (all operations idempotent).
 
 Covers:
   1. cancelStream() clears activeStreamId unconditionally after the fetch
   2. cancelStream() calls setBusy(false) unconditionally
-  3. cancelStream() calls setStatus('') unconditionally
-  4. cancelStream() hides the cancel button unconditionally
+  3. cancelStream() calls setStatus('') / setComposerStatus('') unconditionally
+  4. cancelStream() clears composer status text unconditionally
   5. The catch block no longer calls setStatus(cancel_failed) — cleanup runs even on error
   6. The SSE cancel handler is still present (idempotent path)
   7. cancel_failed i18n key is still defined in all locales (key exists, just not used in
@@ -46,8 +46,11 @@ class TestCancelStreamCleanup:
     def _get_cancel_block(self):
         """Extract the cancelStream function body from boot.js."""
         src = read("static/boot.js")
-        idx = src.find("async function cancelStream()")
-        assert idx != -1, "cancelStream not found in boot.js"
+        # Signature-tolerant: cancelStream now takes a `reason` param (#5345), so
+        # match the declaration regardless of its parameter list.
+        m = re.search(r"async function cancelStream\s*\(", src)
+        assert m is not None, "cancelStream not found in boot.js"
+        idx = m.start()
         # Find the closing brace — scan for the matching }
         depth = 0
         end = idx
@@ -85,11 +88,12 @@ class TestCancelStreamCleanup:
             "'Cancelling...' can linger if SSE cancel event never arrives"
         )
 
-    def test_hides_cancel_button(self):
-        """cancelStream() must hide the cancel button unconditionally."""
+    def test_clears_composer_status(self):
+        """cancelStream() must clear the composer status text unconditionally."""
         block = self._get_cancel_block()
-        assert "btnCancel" in block, (
-            "cancelStream() does not reference btnCancel — cancel button may stay visible"
+        assert "setComposerStatus" in block or "setStatus" in block, (
+            "cancelStream() does not clear composer/status text — "
+            "'Cancelling…' or stale status can linger if SSE cancel event never arrives"
         )
 
     def test_cleanup_not_inside_try_block(self):
@@ -121,8 +125,13 @@ class TestCancelStreamErrorPath:
         The status is cleared by setStatus('') unconditionally.
         """
         src = read("static/boot.js")
-        idx = src.find("async function cancelStream()")
-        block = src[idx:idx + 400]
+        # Signature-tolerant match (cancelStream now takes a `reason` param, #5345).
+        m = re.search(r"async function cancelStream\s*\(", src)
+        assert m is not None, "cancelStream not found in boot.js"
+        idx = m.start()
+        # Widen the window: the provenance log + comments added for #5345 sit
+        # before the try/catch, so 400 chars no longer reaches the catch block.
+        block = src[idx:idx + 1200]
         # The old pattern was setStatus inside catch; new pattern has it outside
         # Look for the catch block specifically
         catch_idx = block.find("}catch(")
@@ -165,9 +174,29 @@ def test_sse_cancel_handler_calls_set_busy():
     # Find the closing of this handler block (next top-level addEventListener)
     next_handler = src.find("source.addEventListener(", idx + 50)
     block = src[idx:next_handler] if next_handler != -1 else src[idx:idx + 3000]
-    assert "setBusy(false)" in block, (
-        "SSE cancel handler no longer calls setBusy(false)"
+    assert (
+        "setBusy(false)" in block
+        or "_setActivePaneIdleIfOwner()" in block
+    ), (
+        "SSE cancel handler no longer idles the owning active pane"
     )
+    if "_setActivePaneIdleIfOwner()" in block:
+        helper_idx = src.find("function _setActivePaneIdleIfOwner")
+        assert helper_idx != -1
+        next_function = src.find("\n  function ", helper_idx + 1)
+        helper = src[helper_idx:next_function if next_function != -1 else helper_idx + 800]
+        assert "setBusy(false)" in helper
+        # The helper MUST preserve the v0.51.12 (#1753) 3-way OR guard so
+        # idling the active pane on a background completion is gated on the
+        # permissive-fallback disjunct ("no other inflight on the active pane")
+        # in addition to "is active" / "no session". Without this, a user
+        # viewing pane A (idle) while pane B completes in the background
+        # would not get pane A's composer state cleared. Catches the exact
+        # regression v0.51.14's auto-fix repaired in PR #1761.
+        assert "!INFLIGHT[S.session.session_id]" in helper, (
+            "_setActivePaneIdleIfOwner must preserve the !INFLIGHT[...] "
+            "permissive-fallback disjunct from PR #1753 (v0.51.12)."
+        )
 
 
 # ── 7. i18n key preserved ─────────────────────────────────────────────────────
@@ -191,16 +220,14 @@ def test_cancel_marker_flagged_as_error_to_skip_in_api_history():
     _error: True so _sanitize_messages_for_api() strips it from the
     conversation_history sent to the agent on the next user message.
 
-    Without this flag, the LLM sees "*Task cancelled.*" as a prior assistant
+    Without this flag, the LLM sees "Task cancelled" as a prior assistant
     turn and may reference it in subsequent responses ("As I mentioned, I was
     cancelled...") — a behavioral regression introduced when this PR started
     persisting the marker to the session.
     """
     src = read("api/streaming.py")
-    idx = src.find("'content': '*Task cancelled.*'")
-    if idx == -1:
-        idx = src.find('"content": "*Task cancelled.*"')
-    assert idx != -1, "cancel marker content string not found in cancel_stream()"
+    idx = src.find("'content': _cancelled_turn_content(message")
+    assert idx != -1, "cancel marker content writer not found in cancel_stream()"
 
     # Walk back to the start of the dict literal (opening brace)
     brace_open = src.rfind("{", 0, idx)
